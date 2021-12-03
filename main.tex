@@ -1,0 +1,269 @@
+\documentclass{article}
+\usepackage[utf8]{inputenc}
+\usepackage{hyperref}
+\usepackage{amsmath,amssymb,amsthm}
+
+\newcommand{\G}{\mathbb{G}}
+\newcommand{\F}{\mathbb{F}}
+\newcommand{\func}[1]{\mathsf{#1}}
+\newcommand{\com}{\func{Com}}
+\newcommand{\comm}{\func{Comm}}
+\newcommand{\addr}{\func{addr}}
+\newcommand{\hash}{\mathcal{H}}
+
+\theoremstyle{remark}
+\newtheorem*{remark}{Remark}
+
+\title{Helsing: Private Masternode Staking}
+\author{Aaron Feickert}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+This technical note reflects work in progress and has not undergone independent review.
+It should be considered experimental and unsuitable for production use.
+
+\section{Introduction}
+
+Firo masternodes operate by a staking mechanism.
+To register as a masternode, a user stakes a fixed amount of Firo as collateral to a transparent address.
+It then produces a registration transaction that specifies the node's identifying information, payout address, signing keys, and other auxiliary data.
+This transaction is signed by the collateral output's key to prove ownership.
+If the collateral output is later spent, the masternode is deregistered.
+Each coinbase transaction on the blockchain includes an output to a selected masternode's payout address, according to consensus rules.
+
+In this technical note, we describe Helsing\footnote{In the Bram Stoker classic novel \textit{Dracula} \cite{dracula}, Abraham van Helsing is a doctor and professor who aids in the pursuit and destruction of the vampiric Count Dracula. It's a great read and worth your time.}, a protocol extension to Spark \cite{spark} that allows for private staking operations not requiring transparent addresses or outputs.
+Specifically, Helsing provides for Spark-compatible collateral staking and coinbase payouts.
+
+
+\section{Cryptographic components}
+
+Throughout this technical note, let $\G$ be a prime-order group where the discrete logarithm problem is hard, and let $\F$ be its scalar field.
+Let $$\hash_{\text{stake}},\hash_{\text{ser}''}, \hash_{\text{val}''}, \hash_{\text{payout}}: \{0,1\}^* \to \F$$ be cryptographic hash functions selected uniformly at random.
+Let $\hash_{\text{ser}}$ and $\hash_{\text{val}}$ be the hash functions defined in \cite{spark}, and let $v_{\text{max}}$ be the maximum value parameter defined therein.
+
+\subsection{Homomorphic commitment}
+
+Helsing requires a homomorphic commitment scheme.
+Such a commitment scheme (at least) computationally binds a commitment to an input value and mask, and perfectly hides the value.
+
+The commitment scheme is a function $\com: \F^2 \to \G$ that is homomorphic in the sense that $\com(v,m) + \com(v',m') = \com(v+v',m+m')$ for all values $v,v' \in \F$ and masks $m,m' \in \F$.
+
+We assume the use of the Pedersen commitment scheme for this purpose.
+Let $pp_{\text{com}} = (\G,\F,G,H)$ be the public parameters for the construction, where $G,H \in \G$ are independent generators with no efficiently-computable discrete logarithm relationship.
+We then define $\com(v,m) = vG + mH$ for all $(v,m) \in \F^2$.
+
+Additionally, we extend this definition to a double-masked commitment scheme, which is a function $\comm: \F^3 \to \G$ with similar homomorphism.
+We assume a natural extension of the Pedersen commitment scheme for this purpose.
+Let $pp_{\text{comm}} = (\G,\F,F,G,H)$ be the public parameteres for the construction, where $F,G,H \in \G$ are independent generators with no efficiently-computable discrete logarithm relationship.
+We then define $\comm(v,m,m') = vF + mG + m'H$ for all $(v,m,m') \in \F^3$.
+
+These constructions are perfectly hiding and computationally binding.
+We refer the reader elsewhere for details on the constructions and these well-known security properties.
+
+
+\subsection{Representation proof}
+
+Helsing requires a zero-knowledge proving system asserting that the prover knows the discrete logarithm of a given group element with respect to a specified generator.
+
+The representation proving system is a tuple $(\func{RepProve},\func{RepVerify})$ of algorithms for the following relation:
+$$\{pp_{\text{rep}},G,Y \in \G ; y \in \F : Y = yG\}$$
+Here $pp_{\text{rep}} = (\G,\F)$ is a set of public parameters.
+The proving system is required to be complete, special honest-verifier zero knowledge, and special sound.
+
+The well-known Schnorr proving system may be used for this purpose.
+We refer the reader elsewhere for the details and security proofs for this instantiation.
+Note that a proof context message may be bound to the initial proof transcript using the Fiat-Shamir construction to produce a signature.
+
+
+\subsection{Parallel one-of-many proof}
+
+Helsing requires a zero-knowledge proving system asserting that the prover knows the discrete logarithms of a pair of commitments within a set of such pairs.
+Much like in Spark spend transactions, this proof is used to produce commitment offsets to serial and value commitments of coins comprising the commitment set.
+In the context of Helsing, it provides (absent external information) ambiguity as to the coin being staked, and allows the commitment offsets to be used later in an ownership and tag proof.
+
+The proving system consists of a tuple of algorithms $(\func{ParProve},\func{ParVerify})$ for the following relation:
+\begin{multline*}
+\left\{ pp_{\text{par}}, \{S_i,V_i\}_{i=0}^{N-1} \subset \G^2, S',V' \in \G ; l \in \mathbb{N}, (s,v) \in \F : \right. \\
+\left. 0 \leq l < N, S_l - S' = \com(0,s), V_l - V' = \com(0,v) \right\}
+\end{multline*}
+Here $pp_{\text{par}} = (\G, \F, n, m, pp_{\text{com}})$ is a set of public parameters for the construction, where $n > 1$ and $m > 1$ are integer-valued size decomposition parameters, and $pp_{\text{com}}$ are the public parameters for a Pedersen commitment construction.
+
+The Spark preprint describes an instantiation of such a proving system that is complete, special honest-verified zero knowledge, and special sound.
+
+
+\subsection{Tag proof}
+
+Helsing requires a zero-knowledge proving system asserting that for a given serial commitment offset and linking tag, the tag validly corresponds to a serial commitment represented by the offset.
+In particular, this means that any spend transaction consuming the coin must reveal the same tag.
+Further, the proof asserts that the prover knows the secret data used to produce the staked coin's serial commitment.
+
+The tag proving system is a tuple of algorithms $(\func{TagProve},\func{TagVerify})$ for the following relation:
+$$\{pp_{\text{tag}},S',T \in \G ; (x,y,z) \in \F^2 : S' = xF + yG + zH, U = xT + yG\}$$
+Here $pp_{\text{tag}} = (\G,\F,F,G,H,U)$ is a set of a public parameters, where the values $F,G,H,U \in \G$ are independent generators with no efficiently-computable discrete logarithm relationship.
+
+The Spark preprint describes an instantiation of such a proving system that is complete, special honest-verifier zero knowledge, and special sound; it further describes how to bind a message to the proof transcript for a signature-like unforgeability property.
+We note that the proving system represented by the functions $(\func{ChaumProve},\func{ChaumVerify})$ in \cite{spark} provides an aggregated form of this relation that can be used for the non-aggregated relation presented here.
+
+
+\section{Collateral staking}
+
+We now introduce a collateral staking protocol that asserts a coin within a given set is uniquely bound to a given stake value, and that a provided tag is correctly generated from the coin.
+This allows a masternode owner to assert it controls valid unspent collateral for node registration purposes.
+Further, the tag ensures that any future transaction spending the collateral can be easily detected by network participants in order to deregister the node.
+The protocol also allows the owner to bind any registration-specific information, like the owner's payout address and node signing keys, to prevent replay and malicious registration.
+
+To set up the protocol, select $F,G,H,U \in \G$ uniformly at random, and choose integers $n,m > 1$ as input set size parameters.
+Set the following component public parameters, which we refer to collectively as simply $pp$ subsequently:
+\begin{align*}
+    pp_{\text{com}} &= (\G,\F,G,H) \\
+    pp_{\text{comm}} &= (\G,\F,F,G,H) \\
+    pp_{\text{rep}} &= (\G,\F) \\
+    pp_{\text{par}} &= (\G,\F,n,m,pp_{\text{com}}) \\
+    pp_{\text{tag}} &= (\G,\F,F,G,H,U)
+\end{align*}
+Set $v_{\text{stake}} \in \F$ as the globally-fixed public parameter indicating the stake collateral value required, where we require $v_{\text{stake}} \in [0,v_{\text{max}})$.
+Set $f \in \F$ as a globally-fixed public parameter indicating the fee required for the staking transaction.
+
+We introduce two functions, $\func{Stake}$ and $\func{StakeVerify}$, that comprise the collateral staking protocol.
+
+
+\subsection{\texorpdfstring{$\func{Stake}$}{Stake}}
+
+This function is used to assert control of unspent collateral in a signer-ambiguous way.
+
+The inputs to $\func{Stake}$ are:
+\begin{itemize}
+    \item Public parameters $pp$
+    \item A full view key $\addr_{\text{full}}$
+    \item A spend key $\addr_{\text{sk}}$
+    \item A set of $N = n^m$ input coins $\func{InCoins}$ as part of a cover set
+    \item For the coin $\func{Coin}$ of value $v + f$ to stake, its index in $\func{InCoins}$, serial number, tag, and recovery key: $(l,s,T,K)$
+    \item Any implementation-specific context $m$ to be bound to the resulting staking transaction structure
+\end{itemize}
+The algorithm outputs a staking transaction.
+
+The algorithm proceeds as follows:
+\begin{enumerate}
+    \item Parse the component $D$ from $\addr_{\text{full}}$.
+    \item Parse the components $(s_1,s_2,r)$ from $\addr_{\text{sk}}$.
+    \item Parse the components $\{S_i,C_i\}_{i=0}^{N-1}$ from $\func{InCoins}$.
+    \item Compute the serial commitment offset: $$S' = \comm(s,0,-\hash_{\text{ser}''}(s,D)) + D$$
+    \item Compute the value commitment offset: $$C' = \com(v_{\text{stake}} + f,\hash_{\text{val}''}(s,D))$$
+    \item Generate a parallel one-of-many proof:
+    \begin{multline*}
+        \Pi_{\text{par}} = \func{ParProve}(pp_{\text{par}},\{S_i,C_i\}_{i=0}^{N-1},S',C' ; \\
+        (l,\hash_{\text{ser}''}(s,D),\hash_{\text{val}}(s_1 K) - \hash_{\text{val}''}(s,D)))
+    \end{multline*}
+    \item Generate a representation proof of the collateral value: $$\Pi_{\text{val}} = \func{RepProve}(pp_{\text{rep}},H,C'-\com(v_{\text{stake}} + f,0) ; \hash_{\text{val}''}(s,D))$$
+    \item Generate a tag proof that additionally binds the context $m$ into the initial transcript: $$\Pi_{\text{tag}} = \func{TagProve}((pp_{\text{tag}},\hash_{\text{stake}}(m)),S',T ; (s,r,-\hash_{\text{ser}''}(s,D)))$$
+    \item Output the tuple $(\func{InCoins},S',C',T,m,\Pi_{\text{par}},\Pi_{\text{val}},\Pi_{\text{tag}})$.
+\end{enumerate}
+
+The context $m$ may include data on the masternode that is required for network participants to process its registration.
+This may include the node's network address, signing keys, and payout Spark address.
+Any network participant can watch future spend transactions; if it sees a valid spend transaction revealing the tag $T$, then it knows the staked collateral has been spent and can deregister the masternode.
+
+
+\subsection{\texorpdfstring{$\func{StakeVerify}$}{StakeVerify}}
+
+This function determines the validity of the output of a staking transaction provided for masternode registration.
+
+The inputs to $\func{StakeVerify}$ are:
+\begin{itemize}
+    \item Public parameters $pp$
+    \item Staking transaction: $(\func{InCoins},S',C',T,m,\Pi_{\text{par}},\Pi_{\text{val}},\Pi_{\text{tag}})$
+\end{itemize}
+The algorithm outputs 1 if the staking transaction is valid, and 0 if it is not.
+
+The algorithm proceeds as follows:
+\begin{enumerate}
+    \item If the tag $T$ appears in any valid Spark spend transaction, output 0.
+    \item Verify that the context $m$ is valid under implementation-specific rules, and output 0 otherwise.
+    \item Parse the components $\{S_i,C_i\}_{i=0}^{N-1}$ from $\func{InCoins}$.
+    \item Check that $\func{ParVerify}(pp_{\text{par}},\{S_i,C_i\}_{i=0}^{N-1},S',C' ; \Pi_{\text{par}})$, and output 0 if this verification fails.
+    \item Check that $\func{RepVerify}(pp_{\text{rep}},H,C'-\com(v_{\text{stake}} + f,0) ; \Pi_{\text{val}})$, and output 0 if this verification fails.
+    \item Check that $\func{TagVerify}((pp_{\text{tag}},\hash_{\text{stake}}(m)),S',T ; \Pi_{\text{tag}})$, and output 0 if this verification fails.
+    \item Output 1.
+\end{enumerate}
+
+\begin{remark}
+Because collateral staking requires specification of an input ambiguity set of possible coins being staked, it is important to consider the selection of this set.
+In particular, a later transaction that spends the collateral and reveals the tag generated in the collateral staking will also include an input ambiguity set.
+The presence of these two sets with the same tag means that observers can infer that the spent collateral coin must be contained in the intersection of the two sets.
+For this reason, the two sets should overlap as much as possible, consistent with consensus-specific size parameters and any other input set selection rules.
+We note that input set selection in general is complex, and methods used should be carefully analyzed.
+\end{remark}
+
+
+\section{Masternode payouts}
+
+Firo coinbase transactions select a masternode (using implementation-specific rules outside the scope of this technical note) and construct a coin directed to the masternode owner's address.
+Currently, this is done using transparent outputs.
+We introduce a method for performing payouts that is consistent with Spark outputs and our staking transaction design.
+For this design, we assume that staking transactions include each registered masternode's Spark payout address, and that the node selected for payout has not been deregistered.
+
+We describe a new function $\func{Payout}$ that generates a new type of transaction, a payout transaction.
+Unlike mint and spend transactions in the Spark protocol, both the recipient address and payout value are public; this is required so network participants can assert the validity of the payout with respect to implementation-specific rules; this verification is done via a new $\func{PayoutVerify}$ function.
+
+
+\subsection{\texorpdfstring{$\func{Payout}$}{Payout}}
+
+This function generates a payout transaction directed to a masternode's Spark payout address, and asserts the validity of the payout.
+It assumes the existence of a block-specific identifier that is unique to the payout and can be inferred by all network participants; this is used to deterministically generate the payout and ensure unique coins in the event the node receives multiple payouts over time to the same address.
+
+The inputs to $\func{Payout}$ are:
+\begin{itemize}
+    \item Public parameters $pp$
+    \item Payout public address $\addr_{\text{pk}}$
+    \item Payout value $v_{\text{payout}}$
+    \item Unique block-specific identifier $j$
+\end{itemize}
+The algorithm outputs a modified coin structure and auxiliary information as a payout transaction.
+
+The algorithm proceeds as follows:
+\begin{enumerate}
+    \item Parse the address values $(Q_0,Q_1,Q_2)$ from $\addr_{\text{pk}}$.
+    \item Set $k = \hash_{\text{payout}}(j,Q_0,Q_1,Q_2)$.
+    \item Compute the recovery key $K = kQ_0$ and derived recovery key $K_{\text{der}} = kQ_1$.
+    \item Compute the serial commitment $S = \comm(\hash_{\text{ser}}(K_{\text{der}}),0,0) + Q_2$.
+    \item Compute the value commitment $C = \com(v_{\text{payout}},\hash_{\text{val}}(K_{\text{der}}))$.
+    \item Let $\func{Coin} = (K,S,C)$, and output the tuple $(\addr_{\text{pk}},\func{Coin})$.
+\end{enumerate}
+
+
+\subsection{\texorpdfstring{$\func{PayoutVerify}$}{PayoutVerify}}
+
+This function determines the validity of a payout transaction.
+
+The inputs to $\func{PayoutVerify}$ are:
+\begin{itemize}
+    \item Public parameters $pp$
+    \item Payout coin structure: $(\addr_{\text{pk}},\func{Coin})$
+    \item Payout value $v_{\text{payout}}$
+    \item Unique block-specific identifier $j$
+\end{itemize}
+The algorithm outputs 1 if the payout is valid, and 0 if it is not.
+
+The algorithm proceeds as follows:
+\begin{enumerate}
+    \item If $\addr_{\text{pk}}$ does not meet implementation-specific rules as the correct payout address, output 0.
+    \item If $v_{\text{payout}}$ does not meet implementation-specific rules as the correct payout value, or if $v_{\text{payout}} \not\in [0,v_{\text{max}})$, output 0.
+    \item Run $\func{Payout}(pp,\addr_{\text{pk}},j) = (\addr_{\text{pk}},\func{Coin}')$.
+    \item If $\func{Coin}' = \func{Coin}$, output 1; otherwise, output 0.
+\end{enumerate}
+
+\begin{remark}
+The existing protocol in \cite{spark} can be easily modified to account for payout transactions.
+Even though we produce a modified coin structure in payout transactions, coin identification and recovery proceed mostly as in \cite{spark}.
+At this point, the recipient of the payout can use the coin in a standard spend transaction.
+Verification of payout transactions is done via $\func{PayoutVerify}$ introduced above.
+\end{remark}
+
+
+\bibliographystyle{plain}
+\bibliography{main}
+
+\end{document}
