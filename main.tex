@@ -42,7 +42,7 @@ Specifically, Helsing provides for Spark-compatible collateral staking and coinb
 
 Throughout this technical note, let $\G$ be a prime-order group where the discrete logarithm problem is hard, and let $\F$ be its scalar field.
 Let $$\hash_{\text{stake}},\hash_{\text{ser}''}, \hash_{\text{val}''}, \hash_{\text{payout}}: \{0,1\}^* \to \F$$ be cryptographic hash functions selected uniformly at random.
-Let $\hash_{\text{ser}}$ and $\hash_{\text{val}}$ be the hash functions defined in \cite{spark}, and let $v_{\text{max}}$ be the maximum value parameter defined therein.
+Let $$\hash_k, \hash_{\text{div}}, \hash_{\text{ser}}, \hash_{\text{val}}$$ be the hash functions defined in \cite{spark}, and let $v_{\text{max}}$ be the maximum value parameter defined therein.
 
 \subsection{Homomorphic commitment}
 
@@ -140,7 +140,7 @@ The inputs to $\func{Stake}$ are:
     \item A full view key $\addr_{\text{full}}$
     \item A spend key $\addr_{\text{sk}}$
     \item A set of $N = n^m$ input coins $\func{InCoins}$ as part of a cover set
-    \item For the coin $\func{Coin}$ of value $v + f$ to stake, its index in $\func{InCoins}$, serial number, tag, and recovery key: $(l,s,T,K)$
+    \item For the coin $\func{Coin}$ of value $v + f$ to stake, its index in $\func{InCoins}$, serial number, tag, and nonce: $(l,s,T,k)$
     \item Any implementation-specific context $m$ to be bound to the resulting staking transaction structure
 \end{itemize}
 The algorithm outputs a staking transaction.
@@ -155,7 +155,7 @@ The algorithm proceeds as follows:
     \item Generate a parallel one-of-many proof:
     \begin{multline*}
         \Pi_{\text{par}} = \func{ParProve}(pp_{\text{par}},\{S_i,C_i\}_{i=0}^{N-1},S',C' ; \\
-        (l,\hash_{\text{ser}''}(s,D),\hash_{\text{val}}(s_1 K) - \hash_{\text{val}''}(s,D)))
+        (l,\hash_{\text{ser}''}(s,D),\hash_{\text{val}}(k) - \hash_{\text{val}''}(s,D)))
     \end{multline*}
     \item Generate a representation proof of the collateral value: $$\Pi_{\text{val}} = \func{RepProve}(pp_{\text{rep}},H,C'-\com(v_{\text{stake}} + f,0) ; \hash_{\text{val}''}(s,D))$$
     \item Generate a tag proof that additionally binds the context $m$ into the initial transcript: $$\Pi_{\text{tag}} = \func{TagProve}((pp_{\text{tag}},\hash_{\text{stake}}(m)),S',T ; (s,r,-\hash_{\text{ser}''}(s,D)))$$
@@ -225,12 +225,12 @@ The algorithm outputs a modified coin structure and auxiliary information as a p
 
 The algorithm proceeds as follows:
 \begin{enumerate}
-    \item Parse the address values $(Q_0,Q_1,Q_2)$ from $\addr_{\text{pk}}$.
-    \item Set $k = \hash_{\text{payout}}(j,Q_0,Q_1,Q_2)$.
-    \item Compute the recovery key $K = kQ_0$ and derived recovery key $K_{\text{der}} = kQ_1$.
-    \item Compute the serial commitment $S = \comm(\hash_{\text{ser}}(K_{\text{der}}),0,0) + Q_2$.
-    \item Compute the value commitment $C = \com(v_{\text{payout}},\hash_{\text{val}}(K_{\text{der}}))$.
-    \item Let $\func{Coin} = (K,S,C)$, and output the tuple $(\addr_{\text{pk}},\func{Coin})$.
+    \item Parse the address values $(d,Q_1,Q_2)$ from $\addr_{\text{pk}}$.
+    \item Set $k = \hash_{\text{payout}}(j,d,Q_1,Q_2)$.
+    \item Compute the recovery key $K = \hash_k(k)\hash_{\text{div}}(d)$.
+    \item Compute the serial commitment $S = \comm(\hash_{\text{ser}}(k),0,0) + Q_2$.
+    \item Compute the value commitment $C = \com(v_{\text{payout}},\hash_{\text{val}}(k))$.
+    \item Let $\func{Coin} = (S,K,C)$, and output the tuple $(\addr_{\text{pk}},\func{Coin})$.
 \end{enumerate}
 
 
